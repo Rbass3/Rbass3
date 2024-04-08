@@ -1,0 +1,161 @@
+---
+title: "5xCreGraphTemplate"
+author: "Rbass"
+date: "2024-03-12"
+output: html_document
+---
+
+
+In this basic analysis, i had a collection of images from 4 groups ("Cntl", "5xFAD", "Ntrk2-cKO" and "5xFAD;Ntrk2-cKO") in which the fluorescent intensity was measured using imageJ. ImageJ created a csv data frame that had all the file names (which were blinded with letters of the alphabet) and the corresponding fluorescent intensity measured. here, i de-blinded the data, manipulated the data frame with dlpyr, performed a t-test, and graphed the data using ggplot. 
+
+
+```{r}
+install.packages("ggpubr")
+```
+
+```{r}
+library(tidyverse)
+library(dplyr)
+library(ggplot2)
+library(ggpubr)
+```
+
+load data 
+```{r}
+subic <- read.csv("/Users/robertbass/Dropbox (UFL)/Xu_Lab/Data/5xFAD_astrocyte_tracing/6_month_5xCre_sagittal/5xCre_6_month_abeta_iba1/blinded images/_just 20x/subiculum/subiculumIntensity.csv")
+
+somato <- read.csv("/Users/robertbass/Dropbox (UFL)/Xu_Lab/Data/5xFAD_astrocyte_tracing/6_month_5xCre_sagittal/5xCre_6_month_abeta_iba1/blinded images/_just 20x/somatomotor/somatomotorIntensity.csv")
+```
+
+generate averages of rows that are from the same sample. de-blind. generate p values.
+```{r}
+deblind <- function(df) {
+  df$genotype <- "undefined"
+  for (i in 1:nrow(df)) {
+    if (df[i,]$letter == "C" | df[i,]$letter == "E" | df[i,]$letter == "F" | df[i,]$letter == "I") {
+      df[i,]$genotype <- "CNTL"
+    }
+    else if (df[i,]$letter == "A" | df[i,]$letter == "B" | df[i,]$letter == "K" | df[i,]$letter == "N"
+              | df[i,]$letter == "P" | df[i,]$letter == "Q") {
+      df[i,]$genotype <- "5xFAD"
+    }
+    else if (df[i,]$letter == "D" | df[i,]$letter == "H" | df[i,]$letter == "J") {
+      df[i,]$genotype <- "Ntrk2-cKO"
+    }
+    else if(df[i,]$letter == "G" | df[i,]$letter == "L" | df[i,]$letter == "M" | df[i,]$letter == "O") {
+      df[i,]$genotype <- "5xFAD;Ntrk2-cKO"
+    }
+  }
+  return(df)
+}
+
+statTest <- function(meanDF) {
+  stats <- compare_means(y ~ genotype,
+                data = meanDF, method = "t.test")
+  return(stats)
+}
+
+#subiculum integrated density
+subicIntDen <- subic %>% 
+  separate(Label, c("letter", "section", "brain region", "objective", "channel"), sep = " ") %>% #separate file name into several columns
+  group_by(letter) %>%
+  summarise(y = mean(IntDen)) %>% #average rows that are from the same animal
+  filter(!letter == "P") %>% #take out 5x 21, which doesn't have a beta plaques
+  deblind() %>%
+  arrange(genotype)
+  
+#somatomotor cortex
+somatoIntDen <- somato %>% 
+  separate(Label, c("letter", "section", "brain region", "objective", "channel"), sep = " ") %>%
+  group_by(letter) %>%
+  summarise(y = mean(IntDen)) %>%
+  filter(!letter == "P") %>%
+  deblind() %>%
+  arrange(genotype)
+
+subicIntDenStats <- statTest(subicIntDen)
+somatoIntDenStats <- statTest(somatoIntDen)
+```
+
+```{r}
+subicAreaStats <- statTest(subicArea)
+somatoAreaStats <- statTest(somatoArea)
+```
+
+
+
+
+
+graph
+```{r}
+graphFunction <- function(df, stats, title) {
+graph <- ggplot(data = df,
+       # mapping = aes(x = genotype, y = y) #if you include aes here it will break the function which makes no sense
+       ) +
+  theme_light() +
+  stat_summary( #bar graph
+    # position = "dodge",
+    mapping = aes(x = genotype, y = y, fill = genotype),
+    fun = mean, fun.min = mean, fun.max = mean,
+    geom = "bar", size = 0.1,
+    width = 0.4
+  ) +
+  stat_summary( #error bars
+    mapping = aes(x = genotype, y = y),
+    position = position_dodge(width = 0.4), #if you just put "dodge" it will cling to the center
+    fun = mean,
+    fun.min = function(x) mean(x) - sd(x), #use sd() or std.error
+    fun.max = function(x) mean(x) + sd(x),
+    geom = "errorbar",
+    size = 0.3, width = 0.2 #size is line thickness
+  ) +
+    geom_jitter(width = 0.1, mapping = aes(x = genotype, y = y, fill = genotype,
+                                         # colour = brainSection#are you going to graph brain section?
+                                         )
+                ) +
+  scale_x_discrete(
+    limits = c("CNTL", "5xFAD", "Ntrk2-cKO", "5xFAD;Ntrk2-cKO"), #this sets order on x axis
+    labels = c("CNTL", "5xFAD", "Ntrk2-cKO", "5xFAD;\nNtrk2-cKO")#this changes labels
+    ) + 
+  # scale_y_continuous(breaks = seq(0, 120, by = 25)) +
+  # theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1)) + #angle of the x variable text
+  scale_fill_manual(
+    values = c(#change colors of the bars
+      "CNTL" = "grey",
+      "5xFAD" = "dark green",
+      "Ntrk2-cKO" = "red",
+      "5xFAD;Ntrk2-cKO" = "blue"),
+    breaks = c(  #this sets the order on the legend
+      "CNTL", "5xFAD", "Ntrk2-cKO", "5xFAD;Ntrk2-cKO"),
+    labels = c( #this labels the legend correctly
+      "CNTL", "5xFAD", "Ntrk2-cKO", "5xFAD;Ntrk2-cKO"),
+   ) +
+  stat_pvalue_manual(stats, hide.ns = "p", label = "p.signif",
+                     y.position = max(df$y)*1.1,
+                     step.increase = 0.2,
+                     size = 8 #this is for powerpoints
+                     ) +
+  labs(title = title,
+       # x = "Genotype",
+       # y = "Length (um)",
+       # fill = "Genotype",
+       ) +
+  theme(plot.title = element_text(hjust = 0.5), #center the title
+        legend.position = "none", #don't show the legend
+        axis.title.x = element_blank() #get rid of x axis label "genotype"
+        ) +
+    #everything below this comment is for powerpoints. also, change the size of the p value number^
+  scale_y_continuous(limits = c(0, max(df$y)*1.8)) +
+  theme(plot.title = element_text(size = 25),
+        axis.title.y = element_text(size = 18),
+        axis.text.x = element_text(size = 14, color = "black"),
+        # axis.text.x = element_text(size = 11, color = "black", angle = 45, vjust = 1, hjust = 1)) 
+        # angle of the x variable text^^
+        axis.text.y = element_text(size = 12, color = "black"),
+        aspect.ratio = 8/10) #small number = short and thin
+return(graph)
+}
+
+graphFunction(somatoIntDen, somatoIntDenStats, "Integrated Density, Somatomotor")
+graphFunction(subicIntDen, subicIntDenStats, "Integrated Density, Subiculum")
+```

@@ -1,0 +1,384 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+this script sifts through a large number of folders and files from the microscope image analysis software Imaris. it it uses sifts through the file systema and uses dplyr and ggplot heavily.
+
+as an example, when you open a microscope image in imaris, and analyze the morphology of cells in the image for exmaple, imaris produces a large number of analysis files (CSVs) and places them in a folder with the same folder name as the image that was analyzed.
+by the end of analyzing many images, you have a large number of folders, and if you want to compare the "dendrite volume" of all your images, you will have to parse that data out from every CSV file within each of those folders.
+this script automates that tedious process by creating a new "dendrite volume" data frame and extracting out that data from each individual CSV from each folder. it does this for every other analysis that Imaris does, in addition to "dendrite volume"
+
+```{r}
+install.packages("ggpubr")
+```
+
+```{r}
+library(dplyr)
+library(ggplot2)
+library(ggpubr)
+```
+
+
+Imaris data analysis
+
+for every image you analyze in Imaris, it produces a large folder of files.
+these files are all different types of analysis: dendrite area, dendrite volume, etc
+every imaris image has its own folder full of files.
+this program creates a list of every type of analysis that was performed (eg dendrites area)
+and then extracts the data frame for that analysis from every image folder
+and makes a large data frame with dendrite area data from every image. 
+every image file and experimental group is labelled on the new, large df. 
+and this is done for every type of analysis, forming a list of data frames
+
+```{r}
+#before doing what i described above^ it is good to start by creating a list of
+#all the imaris data folders with their data frames loaded, in R
+#i call this unorganized data
+#it is the data as it was given by imaris
+
+# input: a folder of Imaris data files for one image
+# output: a list of those datafiles as data frames
+read_folder <- function(image_folder) {
+  temp <- list.files(image_folder, pattern="*.csv")
+  temp_paths <- paste0(image_folder, "/", temp)
+  myfiles <- lapply(temp_paths, read.csv, skip = 3)
+  # temp <- chartr(" ", "_", temp) #replace spaces with underscores
+  names(myfiles) <- temp
+  return(myfiles)
+}
+
+
+#input: a folder that contains all your Imaris image folders
+#output: a list of lists. each sublist is a bunch of data frames from one image
+read_data <- function(big_folder) {
+  setwd(big_folder)
+  temp <- dir() #list of all folders
+  temp <- temp[!grepl("nd2", temp)] #exclude all the nd2 files
+  temp_paths <- paste0(getwd(), "/", temp) #turn names into filepaths
+  data <- lapply(temp_paths, read_folder)
+  names(data) <- temp
+  return(data)
+}
+
+data_folder_name <- "/Users/robertbass/Dropbox (UFL)/Xu Lab/Data/practice IHC Images/Figuring out imaris (gfap)/testing folder"
+unorganized_data <- read_data(data_folder_name)
+
+```
+
+```{r}
+#create a function that will take a data frame
+#the data frame has a column with the file name, called "image_file_name"
+#the file name has the experimental group (5x, fb, etc) it is abbreviated
+#or perhaps it has the images blind number. but this function 
+#will create a new column in the df called genotype and put that group in it.
+#deblinding the data
+
+add_genotype_column <- function(df) {
+  df$genotype <- "Uncategorized"
+  for (entry in 1:nrow(df)) {
+    if (grepl("ctnl", df$image_file_name[entry]) == TRUE) { #NOTICE THIS CNTL TYPO
+           df$genotype[entry] <- "CNTL" 
+    }
+    else if (grepl("5x ", df$image_file_name[entry]) == TRUE) {
+           df$genotype[entry] <- "5xFAD" 
+    }
+    else if (grepl("Cre", df$image_file_name[entry]) == TRUE) {
+           df$genotype[entry] <- "Ntrk2-cKO" 
+    }
+    else if (grepl("5xCre", df$image_file_name[entry]) == TRUE) {
+           df$genotype[entry] <- "5xFAD; Ntrk2-cKO" 
+    }
+  }
+  df <- filter(df, genotype != "Uncategorized") #THIS FILTERS OUT UNCATEGORIZED ENTRIES you may not want this
+  df <- relocate(df, genotype, .after= image_file_name)
+  return(df)
+}
+
+# test <- df_list_output[["Dendrite_Area.csv"]]
+# test_df <- add_genotype_column(test)
+```
+
+
+go through every csv file in an Imaris image folder. identify all the types of
+analysis it performed (the end of the string) 
+```{r}
+#create a list of analyses that imaris performed
+#use a sample imaris folder to extract these names:
+imaris_folder <- "/Users/robertbass/Dropbox (UFL)/Xu Lab/Data/practice IHC Images/Figuring out imaris (gfap)/testing folder/5x sec 3 40x gfap subiculum 30 um newset_Statistics"
+
+files <- list.files(imaris_folder, pattern="*.csv")
+# files <- lapply(files, sub, ".*?_", "") 
+
+R_names <- list() #entries on this list: "Dendrite_Length.csv"
+visual_names <- list() # entries on this list: "Dendrite Length"
+
+for (i in 1:length(files)) {
+  R_names[i] <- sub(".*?_", "", files[i]) #cleave off the image's name, leaving "Dendrite_Length.csv"
+  files[i] <- sub(".*?_", "", files[i])
+  visual_names[i] <- gsub("_", " ", files[i])
+  visual_names[i] <- gsub(".csv", "", visual_names[i])# take off the underscores and .csv
+}
+```
+
+make master data frames for each analysis 
+that contain data from all the other images folder
+```{r}
+#this function takes the list of analyses that were performed (eg dendrite_area.csv)
+#and a folder containing all the imaris image folders (a folder of folders)
+#and sifts through the imaris data folder for each image
+#then it creates a large dataframe with all of it combined
+#and creates a list of these data frames
+#it also adds the genotype column to each of these data frames
+
+make_dfs <- function(analyses_list, folder_path) {
+  df_list <- list()
+  for (analysis_type_index in 1:length(analyses_list)) {
+    temp <- dir(folder_path) #list of all folders in the large directory
+    temp <- temp[!grepl("nd2", temp)] #exclude all the nd2 files
+    temp_paths <- paste0(folder_path, "/", temp) #turn names into filepaths
+    df_count <- 0
+    for (image_folder_path in temp_paths) { #go through the large folder, searching for image folders
+      image_csvs <- list.files(image_folder_path, pattern="*.csv") #extract the csv files from the individual image folder
+      csv_paths <- paste0(image_folder_path, "/", image_csvs) #turn names into filepaths
+      for (file_number in 1:length(csv_paths)) { #iterate through a list of csv paths (the numbers, that is)
+        if (grepl(analyses_list[analysis_type_index], image_csvs[file_number], fixed = TRUE) == TRUE) {
+          #if the "Dendrite_length.csv" is in the file name.
+          image_df <- read.csv(csv_paths[file_number], skip = 3)
+          image_df$image_file_name <- image_csvs[file_number] #add a column with the images name
+          image_df <- relocate(image_df, image_file_name) #make that the first column in the df
+          if (df_count == 0) { #if this is the first image file to be added
+            large_df <- data.frame()
+            large_df <- image_df
+          } else {
+            large_df <- rbind(large_df, image_df)
+            }
+          df_count <- df_count + 1
+          }
+        }
+    }
+    large_df <- add_genotype_column(large_df)
+    large_df <- list(name = large_df)
+    df_list <- append(df_list, large_df)
+  }
+  names(df_list) <- analyses_list
+  return(df_list)
+}
+
+df_list <- make_dfs(R_names, data_folder_name)
+```
+
+
+
+
+
+one thing i should do is create summary data frames.
+for example, i need to find the average dendrite length for a particular image,
+or particular mouse,
+and create graphs where each point on the graph is the average dendrite length
+of a specific mouse. rather than the length of one dendrite
+this will use the summarise dplyr functions
+i don't feel like doing this right now
+
+i also need to add a row to each data frame that has the animal number. 
+like 5xFAD mouse number 5 or something
+but i don't have data for that right now
+
+
+
+
+
+save all of these csv files
+this creates a folder with all the csv files that were just made.
+note that if you put this folder in the same folder as your data, it will disrupt the functions above^ from working!
+```{r}
+dir <- "/Users/robertbass/Dropbox (UFL)/Xu Lab 20230110/Data/practice IHC Images/Figuring out imaris (gfap)"
+folder_name <- "Analysis from R"
+
+dir.create(file.path(dir, folder_name)) #create folder
+setwd(file.path(dir, folder_name))
+
+visual_names_unlist <- unlist(visual_names)
+
+# paste0(dir, "/", folder_name, "/", visual_names_unlist[6])
+# file_name
+
+for (i in 1:length(visual_names_unlist)) {
+  file_name <- paste0(dir, "/", folder_name, "/", visual_names_unlist[i], ".csv") #create paths for each file name
+  write.csv(df_list[i], file = file_name)
+}
+```
+
+
+make graphs of the data
+
+Dendrite Area
+```{r}
+Dendrite_area <- ggplot(data = df_list[["Dendrite_Area.csv"]],
+       mapping = aes(x = genotype, y = Dendrite.Area)) +
+  theme_light() +
+  stat_summary( #bar graph
+    # position = "dodge",
+    fun = mean, fun.min = mean, fun.max = mean,
+    geom = "bar", size = 0.1,
+    width = 0.4
+  ) +
+  stat_summary( #error bars
+    position = position_dodge(width = 0.4), #if you just put "dodge" it will cling to the center
+    fun = mean,
+    fun.min = function(x) mean(x) - sd(x), #use sd() or std.error
+    fun.max = function(x) mean(x) + sd(x),
+    geom = "errorbar",
+    size = 0.3, width = 0.2 #size is line thickness
+  ) +
+  scale_x_discrete(
+    # labels = c("1" = "Day 1", "2" = "Day 2")
+    limits = c("CNTL", "5xFAD")
+    ) + #this sets the order on the x axis
+  # scale_y_continuous(breaks = seq(0, 120, by = 25)) +
+  # theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1)) + #angle of the x variable text
+  # scale_fill_manual( 
+  #   values = c(#change colors of the bars
+  #     "CNTL" = "grey",
+  #     "5xFAD" = "dark green",
+  #     "Ntrk2-cKO" = "red",
+  #     "5xFAD; Ntrk2-cKO" = "dark blue"), 
+  #   breaks = c(  #this sets the order on the legend
+  #     "CNTL", "5xFAD", "Ntrk2-cKO", "5xFAD; Ntrk2-cKO"),
+  #   labels = c( #this labels the legend correctly
+  #     "CNTL", "5xFAD", "Ntrk2-cKO", "5xFAD; Ntrk2-cKO"),
+  #  ) +
+  stat_compare_means(comparisons = list(c("CNTL", "5xFAD")), label = "p.signif",                     
+                     hide.ns = TRUE,
+                     label.y = 120
+                     ) +
+  labs(title = "Dendrite Length",
+       x = "Genotype",
+       y = "Length (um)",
+       # fill = "Genotype",
+       ) +
+  theme(plot.title = element_text(hjust = 0.5), #center the title
+        legend.position = "none", #don't show the legend
+        axis.title.x = element_blank() #get rid of x axis label "genotype"
+        ) 
+
+Dendrite_area
+```
+
+
+Dendrite Volume
+```{r}
+Dendrite_volume <- ggplot(data = df_list[["Dendrite_Volume.csv"]],
+       mapping = aes(x = genotype, y = Dendrite.Volume)) +
+  theme_light() +
+  stat_summary( #bar graph
+    # position = "dodge",
+    fun = mean, fun.min = mean, fun.max = mean,
+    geom = "bar", size = 0.1,
+    width = 0.4
+  ) +
+  stat_summary( #error bars
+    position = position_dodge(width = 0.4), #if you just put "dodge" it will cling to the center
+    fun = mean,
+    fun.min = function(x) mean(x) - sd(x), #use sd() or std.error
+    fun.max = function(x) mean(x) + sd(x),
+    geom = "errorbar",
+    size = 0.3, width = 0.2 #size is line thickness
+  ) +
+  scale_x_discrete(
+    limits = c("CNTL", "5xFAD")
+    ) + #this sets the order on the x axis
+  stat_compare_means(comparisons = list(c("CNTL", "5xFAD")), label = "p.signif",                     
+                     hide.ns = TRUE,
+                     label.y = 75
+                     ) +
+  labs(title = "Dendrite Volume",
+       x = "Genotype",
+       y = "Volume (um^3)",
+       # fill = "Genotype",
+       ) +
+  theme(plot.title = element_text(hjust = 0.5), #center the title
+        legend.position = "none", #don't show the legend
+        axis.title.x = element_blank() #get rid of x axis label "genotype"
+        ) 
+
+Dendrite_volume
+```
+Filament_No._Sholl_Intersections.csv
+```{r}
+sholl_intersections <- ggplot(data = df_list[["Filament_No._Sholl_Intersections.csv"]],
+       mapping = aes(x = genotype, y = Filament.No..Sholl.Intersections)) +
+  theme_light() +
+  stat_summary( #bar graph
+    # position = "dodge",
+    fun = mean, fun.min = mean, fun.max = mean,
+    geom = "bar", size = 0.1,
+    width = 0.4
+  ) +
+  stat_summary( #error bars
+    position = position_dodge(width = 0.4), #if you just put "dodge" it will cling to the center
+    fun = mean,
+    fun.min = function(x) mean(x) - sd(x), #use sd() or std.error
+    fun.max = function(x) mean(x) + sd(x),
+    geom = "errorbar",
+    size = 0.3, width = 0.2 #size is line thickness
+  ) +
+    scale_x_discrete(
+    limits = c("CNTL", "5xFAD")
+    ) + #this sets the order on the x axis
+  stat_compare_means(comparisons = list(c("CNTL", "5xFAD")), label = "p.signif",                     
+                     hide.ns = TRUE,
+                     label.y = 7
+                     ) +
+  labs(title = "# of Sholl Intersections",
+       x = "Genotype",
+       y = "# of Intersections",
+       # fill = "Genotype",
+       ) +
+  theme(plot.title = element_text(hjust = 0.5), #center the title
+        legend.position = "none", #don't show the legend
+        axis.title.x = element_blank() #get rid of x axis label "genotype"
+        ) 
+
+sholl_intersections
+```
+
+Filament_length(sum)
+```{r}
+filament_length_sum <- ggplot(data = df_list[["Filament_Length_(sum).csv"]],
+       mapping = aes(x = genotype, y = Filament.Length..sum.)) +
+  theme_light() +
+  stat_summary( #bar graph
+    # position = "dodge",
+    fun = mean, fun.min = mean, fun.max = mean,
+    geom = "bar", size = 0.1,
+    width = 0.4
+  ) +
+  stat_summary( #error bars
+    position = position_dodge(width = 0.4), #if you just put "dodge" it will cling to the center
+    fun = mean,
+    fun.min = function(x) mean(x) - sd(x), #use sd() or std.error
+    fun.max = function(x) mean(x) + sd(x),
+    geom = "errorbar",
+    size = 0.3, width = 0.2 #size is line thickness
+  ) +
+    scale_x_discrete(
+    limits = c("CNTL", "5xFAD")
+    ) + #this sets the order on the x axis
+  stat_compare_means(comparisons = list(c("CNTL", "5xFAD")), label = "p.signif",                     
+                     hide.ns = TRUE,
+                     label.y = 280
+                     ) +
+  labs(title = "Filament Length (sum)",
+       x = "Genotype",
+       y = "Length (um)",
+       # fill = "Genotype",
+       ) +
+  theme(plot.title = element_text(hjust = 0.5), #center the title
+        legend.position = "none", #don't show the legend
+        axis.title.x = element_blank() #get rid of x axis label "genotype"
+        ) 
+
+filament_length_sum 
+```
+
