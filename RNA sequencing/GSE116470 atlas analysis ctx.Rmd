@@ -1,0 +1,386 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+
+In the following code, i analyzed this scRNAseq atlas of cells in the brain:
+https://pubmed.ncbi.nlm.nih.gov/30096299/
+I measured expression of BDNF and Ntrk2 in the frontal cortex and hippocampus of CNTL mice and exported that data as a PDF
+```{r}
+install.packages('/Users/xulab/Downloads/DropSeq.util_2.0.tar.gz', repos=NULL)
+
+if (!require("BiocManager", quietly = TRUE))
+    install.packages("BiocManager")
+
+BiocManager::install("GEOquery")
+install.packages("scCustomize")
+
+#seurat 5.0.0 doesn't work with dge object. i know that 4.3.0 works
+remotes::install_version("Seurat", version = "4.4.0")
+# install.packages("Matrix", version='1.6-0')
+# remotes::install_version("Matrix", version='1.6-0')
+# 
+# remotes::install_version("tidyverse", version='1.3.2')
+# remotes::install_version("dplyr", version='1.1.2')
+```
+
+
+```{r}
+library("dplyr")
+library("tidyverse")
+library("Seurat")
+library("ggplot2")
+library("cowplot")
+library("ggpubr")
+library("DropSeq.util")
+library("scCustomize")
+# library("GEOquery")
+# install.packages("Rcpp", dependencies = TRUE)
+
+available.packages("seurat")
+```
+
+
+# script to perform standard workflow steps to analyze single cell RNA-Seq data
+
+create the seurat object (raw,non-normalized data)
+```{r}
+dge <- loadSparseDge("/Users/xulab/Documents/Rob/changran analysis/Molecular Diversity and Specialization/F_GRCm38.81.P60Cortex_noRep5_FRONTALonly.raw.dge.txt.gz") 
+
+
+seu <- CreateSeuratObject(counts = dge, project = "test", min.cells = 3, min.features = 200)
+# beep(1)
+# view(seu@meta.data)
+# seu <- seu2
+```
+
+
+
+
+```{r}
+# there are 2 metadata files. one has the cluster assignments (above^) and this one here has cell names associated to the clusters
+cellNames <- readRDS("/Users/xulab/Documents/Rob/changran analysis/Molecular Diversity and Specialization/annotation.BrainCellAtlas_Saunders_version_2018.04.01.RDS")
+cellNames <- filter(cellNames, tissue == "FC")
+
+# outcome = metadata. there are 17 clusters
+outcome <- readRDS("/Users/xulab/Documents/Rob/changran analysis/Molecular Diversity and Specialization/F_GRCm38.81.P60Cortex_noRep5_FRONTALonly.cell_cluster_outcomes.RDS")
+outcome$rowNames <- row.names(outcome) #the cortex is different than the hippocampus
+
+ref <- data.frame(cluster = factor(c(1:14)),
+                  cellType = c(
+                    "Neuron",
+                    "Neuron",
+                    "Neuron",
+                    "Neuron",
+                    "Neuron",
+                    "Neuron",
+                    "Neuron",
+                    "Astrocyte",
+                    "Oligodendrocyte",
+                    "Polydendrocyte",
+                    "Microglia",
+                    "Endothelial Stalk",
+                    "Mural",
+                    "Endothelial Tip"
+                  ))
+test <- left_join(outcome, ref, by=join_by(cluster))
+# cluster <- readRDS("/Users/xulab/Downloads/F_GRCm38.81.P60Hippocampus.cluster.assign.RDS")
+# subcluster <- readRDS("/Users/xulab/Downloads/F_GRCm38.81.P60Hippocampus.subcluster.assign.RDS")
+
+
+#never use the merge function because it changes the order of the df and fucks up seurat. always use dplyr join
+meta <- seu@meta.data
+meta$rowNames <- rownames(seu@meta.data)
+test <- left_join(meta, test, by=join_by(rowNames))
+row.names(test) <- test$rowNames
+test$rowNames <- NULL
+
+
+seu <- AddMetaData(seu, metadata = test)
+
+# filter out low quality cells (anything with a "reason" option in the metadata)
+#this is required to form the the 17 clusters discussed in the paper. without this filtering there will be 22 clusters
+seu@meta.data$reason <- lapply(seu@meta.data$reason, toString)
+seu <- subset(seu, subset = reason == "NA")
+
+
+#look at tally of clusters
+# seu@meta.data %>%
+#   group_by(cluster) %>%
+#   tally()
+
+#look at tally of subclusters
+# seu@meta.data %>%
+#   group_by(subcluster) %>%
+#   tally()
+
+View(seu@meta.data)
+# unique(outcome$cluster)
+# sort(unique(seu@meta.data$cluster))
+
+```
+
+data processing from youtube video:
+
+
+# 1. QC -------
+```{r}
+
+# mito_genes <- grep("^mt-", rownames(seu), value = TRUE)
+# seu[["percent.mt"]] <- PercentageFeatureSet(seu, features = mito_genes)
+
+seu[["percent.mt"]] <- PercentageFeatureSet(seu, pattern = "^mt-")
+
+# View(seu@meta.data)
+#expression of one mito gene
+# seu[["RNA"]]$counts[24463, ]
+
+#list of mito genes
+# grep("^mt-", rownames(seu[["RNA"]]$counts))
+
+#name of one mito gene
+# rownames(seu[["RNA"]]$counts)[24463]
+Idents(seu) <- "cellType"
+
+VlnPlot(seu, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 3)
+FeatureScatter(seu, feature1 = "nCount_RNA", feature2 = "nFeature_RNA") +
+  geom_smooth(method = 'lm')
+
+
+```
+
+
+
+# 2. Filtering -----------------
+
+cells were already filtered out                          
+```{r}
+#this is default
+# seu2 <- subset(seu, subset = nFeature_RNA > 200 & nFeature_RNA < 2500 &
+#                           percent.mt < 5)
+
+# seu <- subset(seu, subset = nFeature_RNA > 200 & percent.mt < 20)
+
+# View(seu@meta.data)
+
+# seu[["RNA"]]$data <- seu[["RNA"]]$counts
+
+# View(seu@assays[["RNA"]]@cells)
+
+```
+                          
+
+# 3. Normalize data ----------
+take gene expression values of each cell, divide by total gene expression,
+multiply by a scaling factor, then log transform. this normalizes expression 
+and allows you to compare expression across cells
+
+```{r}
+#the default parameters (when you have no parameters specified) are as follows:
+#seu <- NormalizeData(seu, normalization.method = "LogNormalize", scale.factor = 10000)
+
+seu <- NormalizeData(seu)
+
+# View(seu2@meta.data)
+# View(seu@meta.data)
+# str(seu)
+
+```
+
+
+
+# 4. Identify highly variable features --------------
+2000 most highly variable genes are saved
+```{r}
+seu <- FindVariableFeatures(seu, selection.method = "vst", nfeatures = 2000)
+
+# Identify the 10 most highly variable genes
+top10 <- head(VariableFeatures(seu), 10)
+
+# plot variable features with and without labels
+plot1 <- VariableFeaturePlot(seu)
+LabelPoints(plot = plot1, points = top10, repel = TRUE)
+```
+
+
+# 5. Scaling -------------
+the data will have unwanted sources of variation. technical noise, such as 
+batch effect, differences in cell cycle, etc. 
+```{r}
+# all.genes <- rownames(seu)
+seu <- ScaleData(seu, features = rownames(seu))
+
+```
+
+
+# 6. Perform Linear dimensionality reduction --------------
+```{r}
+seu <- RunPCA(seu, features = VariableFeatures(object = seu))
+VizDimLoadings(seu, dims = 1:2, reduction = "pca")
+```
+
+
+# visualize PCA results
+```{r}
+print(seu[["pca"]], dims = 1:5, nfeatures = 5)
+DimHeatmap(seu, dims = 1, cells = 500, balanced = TRUE)
+```
+
+
+# determine dimensionality of the data.
+this is also known as a scree plot
+```{r}
+ElbowPlot(seu)
+```
+
+it appears from the elbow plot that most of the variation in the dataset is captured within the first 15 principal components
+# 7. Clustering ------------
+```{r}
+seu <- FindNeighbors(seu, dims = 1:15)
+```
+
+
+# understanding resolution
+```{r}
+# this is the default, it has a lot of clusters
+# seu <- FindClusters(seu, resolution = c(0.1,0.3, 0.5, 0.7, 1))
+seu <- FindClusters(seu, resolution = c(0.03, 0.05, 0.1, 0.2))
+
+# View(seu@meta.data)
+
+DimPlot(seu, group.by = "RNA_snn_res.0.05", label = TRUE)
+```
+
+
+
+# non-linear dimensionality reduction --------------
+```{r}
+seu <- RunUMAP(seu, dims = 1:15)
+DimPlot(seu, reduction = "umap")
+```
+
+
+```{r}
+# find markers for every cluster compared to all remaining cells, report only the positive
+# ones
+seu.markers <- FindAllMarkers(seu, only.pos = TRUE, min.pct = 0.25, logfc.threshold = 0.25)
+seu.markers %>%
+    group_by(cluster) %>%
+    slice_max(n = 2, order_by = avg_log2FC)
+```
+
+
+
+visualize how good your clusters are 
+```{r}
+seu.markers %>%
+  group_by(cluster) %>%
+  top_n(n = 10, wt = avg_log2FC) -> top10
+DoHeatmap(seu, features = top10$gene) + NoLegend()
+```
+
+```{r}
+# unique(Idents(seu))
+seu2 <- seu
+
+seu <- subset(seu, idents = c("Neuron", "Astrocyte", "Oligodendrocyte", "Microglia"))
+Idents(seu) <- factor(seu$cellType, levels = c(
+                    "Neuron",
+                    "Astrocyte",
+                    "Oligodendrocyte",
+                    "Microglia"
+                  ), ordered = TRUE)
+# View(seu@meta.data)
+# Idents(seu) <- cellTypeFactor
+```
+
+
+```{r}
+features <- c("Ntrk2")
+RidgePlot(seu,
+          features = features,
+          # sort = "decreasing"
+          # cols = #colors of groups
+          # sort = c("WT 7 week","WT 1 month", "WT 3 month",
+          #          "WT 6 month", "WT 8 month","WT 20 month",
+          #          "5xFAD 1 month", "5xFAD 3 month", "5xFAD 6 month",
+          #          "5xFAD 9 month", "WT 6 month ctx", "5xFAD 6 month ctx"
+          #          )
+          #change the order depicted
+          # group.by = seu@meta.data$group,
+          # ncol = 1 #only use if multiple plots are displayed
+          ) 
+```
+
+```{r}
+features <- c("Bdnf")
+bdnfCtx <- VlnPlot(seu,
+          features = features
+          ) +
+  ggtitle("Bdnf Expression in Frontal Cortex") +
+  theme(legend.position = "none",
+        axis.title.x = element_blank()) +
+  stat_summary(
+    fun = mean,
+    geom = "crossbar",
+    width = 0.8, size = 0.5
+  ) 
+  # geom_dotplot(binaxis= "y", alpha = 0.01)
+  # geom_jitter(color = "gray")
+  # scale_fill_manual(values = "black")
+bdnfCtx
+```
+
+
+```{r}
+features <- c("Ntrk2")
+Ntrk2Ctx <- VlnPlot(seu,
+          features = features,
+          # cols = #colors of groups
+          # sort = "increasing"
+          #change the order depicted
+          # group.by = seu@meta.data$group,
+          # ncol = 1 #only use if multiple plots are displayed
+          ) +
+  ggtitle("Ntrk2 Expression in Frontal Cortex") +
+  theme(legend.position = "none",
+        axis.title.x = element_blank()) +
+  stat_summary(
+    fun = mean,
+    geom = "crossbar",
+    width = 0.8, size = 0.5
+  )
+Ntrk2Ctx
+```
+
+```{r}
+#cowplot:
+# grid <- plot_grid(bdnfCtx, Ntrk2Ct2, labels = c("A", "B"))
+# grid
+
+# ggpubr:
+# grid <- ggarrange(bdnfCtx, Ntrk2Ctx)
+grid <- ggarrange(bdnfCtx, Ntrk2Ctx, bdnfHippo, ntrk2Hippo)
+grid
+```
+
+ˆ
+```{r}
+features <- c("Bdnf", "Ntrk2")
+Percent_Expressing(seu, features)
+Percent_Expressing(hseu, features)
+# DotPlot(seu, features = features) + RotatedAxis()
+```
+
+```{r}
+ggexport(grid, filename="ctxHippoExpression.pdf", width = 14, height = 16)
+```
+
+
+this saves the entire seurat object
+```{r}
+# saveRDS(seu, file = "../GSE140511 5x all cells /seu")
+```
+
+
