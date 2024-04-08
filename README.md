@@ -1,7 +1,9 @@
-- Hi, I’m @Rbass3
-- I’m interested in bioinformatics, i have a background in cellular and molecular neuroscience
-- I’m currently learning single-cell transcriptomics and machine learning methods useful for biologists such as CNNs
-- How to reach me: i work at UF Scripps Biomedical Research in Jupiter, Fl. my email is rgbass3@gmail.com
+- Hi, I’m Robert Bass (@Rbass3), PhD candidate at Scripps Research.
+- i work at UF Scripps Biomedical Research in Jupiter, Fl. my email is Rbass@scripps.edu
+- i have a background in cellular and molecular neuroscience, and I’m interested in Bioinformatics. I work with Dr. Baoji Xu
+- I’m currently learning single-cell transcriptomics and machine learning methods that are useful for biologists such as CNNs.
+- I have scripts published here that i have used during my PhD.
+- I have experience with R (seurat, dplyr, ggplot2), python (scanpy, pandas), imageJ, and managing environments with anaconda.
 - Pronouns: he/him
 
 <!---
