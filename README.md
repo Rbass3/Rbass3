@@ -4,7 +4,6 @@
 - I’m currently learning single-cell transcriptomics and machine learning methods that are useful for biologists such as CNNs.
 - I have scripts published here that i have used during my PhD.
 - I have experience with R (seurat, dplyr, ggplot2), python (scanpy, pandas), imageJ, and managing environments with anaconda.
-- Pronouns: he/him
 
 <!---
 Rbass3/Rbass3 is a ✨ special ✨ repository because its `README.md` (this file) appears on your GitHub profile.
